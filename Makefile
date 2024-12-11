@@ -1,3 +1,7 @@
+ifndef LLAMA_MAKEFILE
+$(error The Makefile build is deprecated. Use the CMake build instead. For more details, see https://github.com/ggerganov/llama.cpp/blob/master/docs/build.md)
+endif
+
 # Define the default target now so that it is always the first target
 BUILD_TARGETS = \
 	libllava.a \
@@ -34,6 +38,7 @@ BUILD_TARGETS = \
 	llama-server \
 	llama-simple \
 	llama-simple-chat \
+	llama-run \
 	llama-speculative \
 	llama-tokenize \
 	llama-vdot \
@@ -48,7 +53,6 @@ TEST_TARGETS = \
 	tests/test-backend-ops \
 	tests/test-chat-template \
 	tests/test-double-float \
-	tests/test-grad0 \
 	tests/test-grammar-integration \
 	tests/test-grammar-parser \
 	tests/test-json-schema-to-grammar \
@@ -251,11 +255,11 @@ endif
 # Compile flags
 #
 
-# keep standard at C11 and C++11
-MK_CPPFLAGS  = -Iggml/include -Iggml/src -Iinclude -Isrc -Icommon
+# keep standard at C11 and C++17
+MK_CPPFLAGS  = -Iggml/include -Iggml/src -Iinclude -Isrc -Icommon -DGGML_USE_CPU
 MK_CFLAGS    = -std=c11   -fPIC
-MK_CXXFLAGS  = -std=c++11 -fPIC
-MK_NVCCFLAGS = -std=c++11
+MK_CXXFLAGS  = -std=c++17 -fPIC
+MK_NVCCFLAGS = -std=c++17
 
 ifdef LLAMA_NO_CCACHE
 GGML_NO_CCACHE := 1
@@ -291,6 +295,7 @@ endif
 # some memory allocation are available on Linux through GNU extensions in libc
 ifeq ($(UNAME_S),Linux)
 	MK_CPPFLAGS += -D_GNU_SOURCE
+	MK_LDFLAGS  += -ldl
 endif
 
 # RLIMIT_MEMLOCK came in BSD, is not specified in POSIX.1,
@@ -440,6 +445,10 @@ ifeq ($(UNAME_M),$(filter $(UNAME_M),x86_64 i686 amd64))
 	MK_CFLAGS     += -march=native -mtune=native
 	HOST_CXXFLAGS += -march=native -mtune=native
 
+	# Usage AMX build test
+	#MK_CFLAGS     += -march=graniterapids -mtune=graniterapids
+	#HOST_CXXFLAGS += -march=graniterapids -mtune=graniterapids
+
 	# Usage AVX-only
 	#MK_CFLAGS   += -mfma -mf16c -mavx
 	#MK_CXXFLAGS += -mfma -mf16c -mavx
@@ -574,8 +583,11 @@ endif
 
 ifndef GGML_NO_AMX
 	MK_CPPFLAGS += -DGGML_USE_AMX
-	OBJ_GGML_EXT += ggml/src/ggml-amx/ggml-amx.o ggml/src/ggml-amx/mmq.o
+	OBJ_GGML_EXT += ggml/src/ggml-cpu/amx/amx.o ggml/src/ggml-cpu/amx/mmq.o
 endif
+
+# only necessary for the CPU backend files
+MK_CPPFLAGS += -Iggml/src/ggml-cpu
 
 ifdef GGML_RPC
 	MK_CPPFLAGS  += -DGGML_USE_RPC
@@ -636,10 +648,6 @@ else ifndef CUDA_POWER_ARCH
 	MK_NVCCFLAGS += -arch=native
 endif # CUDA_DOCKER_ARCH
 
-ifdef GGML_CUDA_FORCE_DMMV
-	MK_NVCCFLAGS += -DGGML_CUDA_FORCE_DMMV
-endif # GGML_CUDA_FORCE_DMMV
-
 ifdef GGML_CUDA_FORCE_MMQ
 	MK_NVCCFLAGS += -DGGML_CUDA_FORCE_MMQ
 endif # GGML_CUDA_FORCE_MMQ
@@ -648,20 +656,6 @@ ifdef GGML_CUDA_FORCE_CUBLAS
 	MK_NVCCFLAGS += -DGGML_CUDA_FORCE_CUBLAS
 endif # GGML_CUDA_FORCE_CUBLAS
 
-ifdef GGML_CUDA_DMMV_X
-	MK_NVCCFLAGS += -DGGML_CUDA_DMMV_X=$(GGML_CUDA_DMMV_X)
-else
-	MK_NVCCFLAGS += -DGGML_CUDA_DMMV_X=32
-endif # GGML_CUDA_DMMV_X
-
-ifdef GGML_CUDA_MMV_Y
-	MK_NVCCFLAGS += -DGGML_CUDA_MMV_Y=$(GGML_CUDA_MMV_Y)
-else ifdef GGML_CUDA_DMMV_Y
-	MK_NVCCFLAGS += -DGGML_CUDA_MMV_Y=$(GGML_CUDA_DMMV_Y) # for backwards compatibility
-else
-	MK_NVCCFLAGS += -DGGML_CUDA_MMV_Y=1
-endif # GGML_CUDA_MMV_Y
-
 ifdef GGML_CUDA_F16
 	MK_NVCCFLAGS += -DGGML_CUDA_F16
 endif # GGML_CUDA_F16
@@ -669,12 +663,6 @@ endif # GGML_CUDA_F16
 ifdef GGML_CUDA_DMMV_F16
 	MK_NVCCFLAGS += -DGGML_CUDA_F16
 endif # GGML_CUDA_DMMV_F16
-
-ifdef GGML_CUDA_KQUANTS_ITER
-	MK_NVCCFLAGS += -DK_QUANTS_PER_ITERATION=$(GGML_CUDA_KQUANTS_ITER)
-else
-	MK_NVCCFLAGS += -DK_QUANTS_PER_ITERATION=2
-endif
 
 ifdef GGML_CUDA_PEER_MAX_BATCH_SIZE
 	MK_NVCCFLAGS += -DGGML_CUDA_PEER_MAX_BATCH_SIZE=$(GGML_CUDA_PEER_MAX_BATCH_SIZE)
@@ -755,10 +743,10 @@ GLSLC_CMD  = glslc
 _ggml_vk_genshaders_cmd = $(shell pwd)/vulkan-shaders-gen
 _ggml_vk_header = ggml/src/ggml-vulkan-shaders.hpp
 _ggml_vk_source = ggml/src/ggml-vulkan-shaders.cpp
-_ggml_vk_input_dir = ggml/src/vulkan-shaders
+_ggml_vk_input_dir = ggml/src/ggml-vulkan/vulkan-shaders
 _ggml_vk_shader_deps = $(echo $(_ggml_vk_input_dir)/*.comp)
 
-ggml/src/ggml-vulkan.o: ggml/src/ggml-vulkan.cpp ggml/include/ggml-vulkan.h $(_ggml_vk_header) $(_ggml_vk_source)
+ggml/src/ggml-vulkan.o: ggml/src/ggml-vulkan/ggml-vulkan.cpp ggml/include/ggml-vulkan.h $(_ggml_vk_header) $(_ggml_vk_source)
 	$(CXX) $(CXXFLAGS) $(shell pkg-config --cflags vulkan) -c $< -o $@
 
 $(_ggml_vk_header): $(_ggml_vk_source)
@@ -770,12 +758,12 @@ $(_ggml_vk_source): $(_ggml_vk_shader_deps) vulkan-shaders-gen
 		--target-hpp $(_ggml_vk_header) \
 		--target-cpp $(_ggml_vk_source)
 
-vulkan-shaders-gen: ggml/src/vulkan-shaders/vulkan-shaders-gen.cpp
-	$(CXX) $(CXXFLAGS) -o $@ $(LDFLAGS) ggml/src/vulkan-shaders/vulkan-shaders-gen.cpp
+vulkan-shaders-gen: ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $(LDFLAGS) ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
 
 endif # GGML_VULKAN
 
-ifdef GGML_HIPBLAS
+ifdef GGML_HIP
 	ifeq ($(wildcard /opt/rocm),)
 		ROCM_PATH      ?= /usr
 		AMDGPU_TARGETS ?= $(shell $(shell which amdgpu-arch))
@@ -783,10 +771,6 @@ ifdef GGML_HIPBLAS
 		ROCM_PATH	?= /opt/rocm
 		AMDGPU_TARGETS ?= $(shell $(ROCM_PATH)/llvm/bin/amdgpu-arch)
 	endif
-
-	GGML_CUDA_DMMV_X       ?= 32
-	GGML_CUDA_MMV_Y        ?= 1
-	GGML_CUDA_KQUANTS_ITER ?= 2
 
 	MK_CPPFLAGS += -DGGML_USE_HIP -DGGML_USE_CUDA
 
@@ -801,13 +785,6 @@ endif # GGML_HIP_UMA
 	HIPCC ?= $(CCACHE) $(ROCM_PATH)/bin/hipcc
 
 	HIPFLAGS += $(addprefix --offload-arch=,$(AMDGPU_TARGETS))
-	HIPFLAGS += -DGGML_CUDA_DMMV_X=$(GGML_CUDA_DMMV_X)
-	HIPFLAGS += -DGGML_CUDA_MMV_Y=$(GGML_CUDA_MMV_Y)
-	HIPFLAGS += -DK_QUANTS_PER_ITERATION=$(GGML_CUDA_KQUANTS_ITER)
-
-ifdef GGML_CUDA_FORCE_DMMV
-	HIPFLAGS += -DGGML_CUDA_FORCE_DMMV
-endif # GGML_CUDA_FORCE_DMMV
 
 ifdef GGML_CUDA_FORCE_MMQ
 	HIPFLAGS += -DGGML_CUDA_FORCE_MMQ
@@ -841,7 +818,7 @@ ggml/src/ggml-cuda/%.o: \
 	ggml/src/ggml-common.h \
 	ggml/src/ggml-cuda/common.cuh
 	$(HIPCC) $(CXXFLAGS) $(HIPFLAGS) -x hip -c -o $@ $<
-endif # GGML_HIPBLAS
+endif # GGML_HIP
 
 ifdef GGML_MUSA
 	ifeq ($(wildcard /opt/musa),)
@@ -849,7 +826,7 @@ ifdef GGML_MUSA
 	else
 		MUSA_PATH ?= /opt/musa
 	endif
-	MTGPU_TARGETS ?= mp_21 mp_22
+	MUSA_ARCHITECTURES ?= 21;22
 
 	MK_CPPFLAGS += -DGGML_USE_MUSA -DGGML_USE_CUDA
 	MK_LDFLAGS += -L$(MUSA_PATH)/lib -Wl,-rpath=$(MUSA_PATH)/lib
@@ -868,11 +845,8 @@ ifdef GGML_MUSA
 	CXX := $(MUSA_PATH)/bin/clang++
 	MCC := $(CCACHE) $(MUSA_PATH)/bin/mcc
 
-	MUSAFLAGS += $(addprefix --cuda-gpu-arch=, $(MTGPU_TARGETS))
-
-ifdef GGML_CUDA_FORCE_DMMV
-	MUSAFLAGS += -DGGML_CUDA_FORCE_DMMV
-endif # GGML_CUDA_FORCE_DMMV
+	MUSAFLAGS  = -x musa -mtgpu
+	MUSAFLAGS += $(foreach arch,$(subst ;, ,$(MUSA_ARCHITECTURES)),--cuda-gpu-arch=mp_$(arch))
 
 ifdef GGML_CUDA_FORCE_MMQ
 	MUSAFLAGS += -DGGML_CUDA_FORCE_MMQ
@@ -882,18 +856,6 @@ ifdef GGML_CUDA_FORCE_CUBLAS
 	MUSAFLAGS += -DGGML_CUDA_FORCE_CUBLAS
 endif # GGML_CUDA_FORCE_CUBLAS
 
-ifdef GGML_CUDA_DMMV_X
-	MUSAFLAGS += -DGGML_CUDA_DMMV_X=$(GGML_CUDA_DMMV_X)
-else
-	MUSAFLAGS += -DGGML_CUDA_DMMV_X=32
-endif # GGML_CUDA_DMMV_X
-
-ifdef GGML_CUDA_MMV_Y
-	MUSAFLAGS += -DGGML_CUDA_MMV_Y=$(GGML_CUDA_MMV_Y)
-else
-	MUSAFLAGS += -DGGML_CUDA_MMV_Y=1
-endif # GGML_CUDA_MMV_Y
-
 ifdef GGML_CUDA_F16
 	MUSAFLAGS += -DGGML_CUDA_F16
 endif # GGML_CUDA_F16
@@ -901,12 +863,6 @@ endif # GGML_CUDA_F16
 ifdef GGML_CUDA_DMMV_F16
 	MUSAFLAGS += -DGGML_CUDA_F16
 endif # GGML_CUDA_DMMV_F16
-
-ifdef GGML_CUDA_KQUANTS_ITER
-	MUSAFLAGS += -DK_QUANTS_PER_ITERATION=$(GGML_CUDA_KQUANTS_ITER)
-else
-	MUSAFLAGS += -DK_QUANTS_PER_ITERATION=2
-endif
 
 ifdef GGML_CUDA_PEER_MAX_BATCH_SIZE
 	MUSAFLAGS += -DGGML_CUDA_PEER_MAX_BATCH_SIZE=$(GGML_CUDA_PEER_MAX_BATCH_SIZE)
@@ -934,14 +890,14 @@ ggml/src/ggml-cuda/ggml-cuda.o: \
 	ggml/src/ggml-backend-impl.h \
 	ggml/src/ggml-common.h \
 	$(wildcard ggml/src/ggml-cuda/*.cuh)
-	$(MCC) $(CXXFLAGS) $(MUSAFLAGS) -x musa -mtgpu -c -o $@ $<
+	$(MCC) $(CXXFLAGS) $(MUSAFLAGS) -c -o $@ $<
 
 ggml/src/ggml-cuda/%.o: \
 	ggml/src/ggml-cuda/%.cu \
 	ggml/include/ggml.h \
 	ggml/src/ggml-common.h \
 	ggml/src/ggml-cuda/common.cuh
-	$(MCC) $(CXXFLAGS) $(MUSAFLAGS) -x musa -mtgpu -c -o $@ $<
+	$(MCC) $(CXXFLAGS) $(MUSAFLAGS) -c -o $@ $<
 endif # GGML_MUSA
 
 ifdef GGML_METAL
@@ -964,6 +920,7 @@ endif # GGML_METAL
 ifdef GGML_METAL
 ggml/src/ggml-metal/ggml-metal.o: \
 	ggml/src/ggml-metal/ggml-metal.m \
+	ggml/src/ggml-metal/ggml-metal-impl.h \
 	ggml/include/ggml-metal.h \
 	ggml/include/ggml.h
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -971,9 +928,11 @@ ggml/src/ggml-metal/ggml-metal.o: \
 ifdef GGML_METAL_EMBED_LIBRARY
 ggml/src/ggml-metal-embed.o: \
 	ggml/src/ggml-metal/ggml-metal.metal \
+	ggml/src/ggml-metal/ggml-metal-impl.h \
 	ggml/src/ggml-common.h
 	@echo "Embedding Metal library"
-	@sed -e '/__embed_ggml-common.h__/r ggml/src/ggml-common.h' -e '/__embed_ggml-common.h__/d' < ggml/src/ggml-metal/ggml-metal.metal > ggml/src/ggml-metal/ggml-metal-embed.metal
+	@sed -e '/__embed_ggml-common.h__/r      ggml/src/ggml-common.h'                -e '/__embed_ggml-common.h__/d'      < ggml/src/ggml-metal/ggml-metal.metal           > ggml/src/ggml-metal/ggml-metal-embed.metal.tmp
+	@sed -e '/#include "ggml-metal-impl.h"/r ggml/src/ggml-metal/ggml-metal-impl.h' -e '/#include "ggml-metal-impl.h"/d' < ggml/src/ggml-metal/ggml-metal-embed.metal.tmp > ggml/src/ggml-metal/ggml-metal-embed.metal
 	$(eval TEMP_ASSEMBLY=$(shell mktemp -d))
 	@echo ".section __DATA, __ggml_metallib"                       >  $(TEMP_ASSEMBLY)/ggml-metal-embed.s
 	@echo ".globl _ggml_metallib_start"                            >> $(TEMP_ASSEMBLY)/ggml-metal-embed.s
@@ -993,16 +952,18 @@ DIR_COMMON = common
 
 OBJ_GGML = \
 	$(DIR_GGML)/src/ggml.o \
-	$(DIR_GGML)/src/ggml-aarch64.o \
 	$(DIR_GGML)/src/ggml-alloc.o \
 	$(DIR_GGML)/src/ggml-backend.o \
 	$(DIR_GGML)/src/ggml-backend-reg.o \
+	$(DIR_GGML)/src/ggml-opt.o \
 	$(DIR_GGML)/src/ggml-quants.o \
 	$(DIR_GGML)/src/ggml-threading.o \
 	$(DIR_GGML)/src/ggml-cpu/ggml-cpu.o \
-	$(DIR_GGML)/src/ggml-cpu/ggml-cpu-cpp.o \
+	$(DIR_GGML)/src/ggml-cpu/ggml-cpu_cpp.o \
 	$(DIR_GGML)/src/ggml-cpu/ggml-cpu-aarch64.o \
+	$(DIR_GGML)/src/ggml-cpu/ggml-cpu-hbm.o \
 	$(DIR_GGML)/src/ggml-cpu/ggml-cpu-quants.o \
+	$(DIR_GGML)/src/ggml-cpu/ggml-cpu-traits.o \
 	$(OBJ_GGML_EXT)
 
 OBJ_LLAMA = \
@@ -1020,6 +981,7 @@ OBJ_COMMON = \
 	$(DIR_COMMON)/console.o \
 	$(DIR_COMMON)/ngram-cache.o \
 	$(DIR_COMMON)/sampling.o \
+	$(DIR_COMMON)/speculative.o \
 	$(DIR_COMMON)/build-info.o \
 	$(DIR_COMMON)/json-schema-to-grammar.o
 
@@ -1141,17 +1103,10 @@ DEP_FILES = $(OBJ_GGML:.o=.d) $(OBJ_LLAMA:.o=.d) $(OBJ_COMMON:.o=.d)
 # Default target
 all: $(BUILD_TARGETS)
 
+# force c++ build for source file that have same name as c file
 # Note: need this exception because `ggml-cpu.c` and `ggml-cpu.cpp` both produce the same obj/dep files
-#       g++ -M -I ./ggml/include/ -I ./ggml/src ggml/src/ggml-cpu/ggml-cpu.cpp | grep ggml
-$(DIR_GGML)/src/ggml-cpu/ggml-cpu-cpp.o: \
-	ggml/src/ggml-cpu/ggml-cpu.cpp \
-	ggml/include/ggml-backend.h \
-	ggml/include/ggml.h \
-	ggml/include/ggml-alloc.h \
-	ggml/src/ggml-backend-impl.h \
-	ggml/include/ggml-cpu.h \
-	ggml/src/ggml-impl.h
-	$(CXX) $(CXXFLAGS)   -c $< -o $@
+$(DIR_GGML)/%_cpp.o: $(DIR_GGML)/%.cpp
+	$(CXX) $(CXXFLAGS) -MMD -c $< -o $@
 
 # Rules for building object files
 $(DIR_GGML)/%.o: $(DIR_GGML)/%.c
@@ -1188,8 +1143,15 @@ $(LIB_COMMON_S): $(OBJ_COMMON)
 # Include dependency files
 -include $(DEP_FILES)
 
+# Clean generated server assets
+clean-server-assets:
+	find examples/server -type f -name "*.js.hpp"   -delete
+	find examples/server -type f -name "*.mjs.hpp"  -delete
+	find examples/server -type f -name "*.css.hpp"  -delete
+	find examples/server -type f -name "*.html.hpp" -delete
+
 # Clean rule
-clean:
+clean: clean-server-assets
 	rm -vrf $(BUILD_TARGETS) $(TEST_TARGETS)
 	rm -rvf *.a *.dll *.so *.dot
 	find ggml src common tests examples pocs -type f -name "*.o" -delete
@@ -1215,6 +1177,11 @@ llama-cli: examples/main/main.cpp \
 	@echo
 
 llama-infill: examples/infill/infill.cpp \
+	$(OBJ_ALL)
+	$(CXX) $(CXXFLAGS) -c $< -o $(call GET_OBJ_FILE, $<)
+	$(CXX) $(CXXFLAGS) $(filter-out %.h $<,$^) $(call GET_OBJ_FILE, $<) -o $@ $(LDFLAGS)
+
+llama-run: examples/run/run.cpp \
 	$(OBJ_ALL)
 	$(CXX) $(CXXFLAGS) -c $< -o $(call GET_OBJ_FILE, $<)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h $<,$^) $(call GET_OBJ_FILE, $<) -o $@ $(LDFLAGS)
@@ -1392,20 +1359,14 @@ llama-server: \
 	examples/server/utils.hpp \
 	examples/server/httplib.h \
 	examples/server/index.html.hpp \
-	examples/server/completion.js.hpp \
 	examples/server/loading.html.hpp \
-	examples/server/deps_daisyui.min.css.hpp \
-	examples/server/deps_markdown-it.js.hpp \
-	examples/server/deps_tailwindcss.js.hpp \
-	examples/server/deps_vue.esm-browser.js.hpp \
 	common/json.hpp \
-	common/stb_image.h \
 	$(OBJ_ALL)
 	$(CXX) $(CXXFLAGS) -c $< -o $(call GET_OBJ_FILE, $<)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h %.hpp $<,$^) -Iexamples/server $(call GET_OBJ_FILE, $<) -o $@ $(LDFLAGS) $(LWINSOCK2)
 
 # Portable equivalent of `cd examples/server/public && xxd -i $(notdir $<) ../$(notdir $<).hpp`:
-examples/server/%.hpp: examples/server/public/% Makefile
+examples/server/%.hpp: examples/server/public/% FORCE Makefile
 	@( export NAME=$(subst .,_,$(subst -,_,$(notdir $<))) && \
 		echo "unsigned char $${NAME}[] = {" && \
 		cat $< | od -v -t x1 -An | sed -E 's/([0-9a-fA-F]+)/0x\1, /g' && \
@@ -1499,11 +1460,6 @@ tests/test-json-schema-to-grammar: tests/test-json-schema-to-grammar.cpp \
 	$(CXX) $(CXXFLAGS) -Iexamples/server -c $< -o $(call GET_OBJ_FILE, $<)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h $<,$^) $(call GET_OBJ_FILE, $<) -o $@ $(LDFLAGS)
 
-tests/test-grad0: tests/test-grad0.cpp \
-	$(OBJ_GGML)
-	$(CXX) $(CXXFLAGS) -c $< -o $(call GET_OBJ_FILE, $<)
-	$(CXX) $(CXXFLAGS) $(filter-out %.h $<,$^) $(call GET_OBJ_FILE, $<) -o $@ $(LDFLAGS)
-
 tests/test-opt: tests/test-opt.cpp \
 	$(OBJ_GGML)
 	$(CXX) $(CXXFLAGS) -c $< -o $(call GET_OBJ_FILE, $<)
@@ -1585,7 +1541,7 @@ llama-q8dot: pocs/vdot/q8dot.cpp ggml/src/ggml.o \
 # Deprecated binaries that we want to keep around long enough for people to migrate to the new filenames, then these can be removed.
 #
 # Mark legacy binary targets as .PHONY so that they are always checked.
-.PHONY: main quantize perplexity embedding server
+.PHONY: FORCE main quantize perplexity embedding server
 
 # Define the object file target
 examples/deprecation-warning/deprecation-warning.o: examples/deprecation-warning/deprecation-warning.cpp
